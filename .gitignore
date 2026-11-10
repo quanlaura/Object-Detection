@@ -6,3 +6,16 @@ __pycache__/
 # Bỏ qua file nén quá lớn và log
 runs/
 *.pth
+
+# Local demo inputs and generated outputs
+demo_images/
+public/
+.env
+.env.*
+!.env.example
+*.zip
+*.log
+val_best_predictions.json
+val_predictions.json
+val_score.json
+.pytest_cache/

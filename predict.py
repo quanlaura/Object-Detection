@@ -57,14 +57,15 @@ def collate(batch):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--image_dir", required=True, type=Path)
-    parser.add_argument("--checkpoint", required=True, type=Path)
+    parser.add_argument("--checkpoint", type=Path,
+                        default=Path(__file__).resolve().parent / "models" / "best.pth")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--conf_thresh", type=float, default=0.25)
     parser.add_argument("--nms_thresh", type=float, default=0.4)
     parser.add_argument("--max_detections", type=int, default=100)
-    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     args = parser.parse_args()
 
     if args.output.resolve() == args.checkpoint.resolve():
@@ -76,7 +77,11 @@ def main():
     if args.max_detections < 1:
         raise ValueError("max_detections phải dương.")
 
-    device = torch.device(args.device)
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu"
+    ) if args.device == "auto" else torch.device(args.device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA không khả dụng; hãy dùng --device cpu.")
     checkpoint = torch.load(
         args.checkpoint,
         map_location="cpu",
