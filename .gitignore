@@ -1,0 +1,8 @@
+# Bỏ qua dataset và môi trường ảo
+final_public/
+.venv/
+__pycache__/
+
+# Bỏ qua file nén quá lớn và log
+runs/
+*.pth
