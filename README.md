@@ -607,8 +607,3 @@ Bản dự án hiện tại chạy bằng Python/venv; chưa có Dockerfile đư
 - Gradio: [Tài liệu chính thức](https://www.gradio.app/docs).
 
 README mô tả trạng thái code và kết quả thực tế của ObjectDetectionV1. Các tính năng tùy chọn, kết quả của bài mẫu và kết quả hidden test được phân biệt với lượt validation đã kiểm chứng.
-
-## Ghi chú sau khi dọn thư mục
-
-Checkpoint resume hiện đặt tại `models/last.pth`; JSON validation đã lưu tại `runs/evaluation/val_best_predictions.json`.
-Các file cũ và smoke test được chuyển vào `runs/cleanup_archive_20261110_224642/`, có `manifest.json` ghi vị trí trước/sau để khôi phục. Đây là lưu trữ có thể phục hồi, chưa xóa vĩnh viễn hay giải phóng dung lượng của các file đó.
