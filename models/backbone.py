@@ -1,17 +1,7 @@
-"""Backbone ResNet cung cấp ba mức đặc trưng C3, C4, C5."""
+"""Lấy ba mức đặc trưng từ ResNet của torchvision để đưa vào FPN."""
 
-from torch import nn
-from torchvision import models
-
-
-def _freeze_bn(module: nn.Module):
-    """Giữ BatchNorm dùng running statistics và tắt gradient."""
-    for layer in module.modules():
-        if isinstance(layer, nn.BatchNorm2d):
-            layer.eval()
-
-            for parameter in layer.parameters():
-                parameter.requires_grad_(False)
+from torch import Tensor, nn
+from torchvision.models import get_model, get_model_weights
 
 
 class ResNetBackbone(nn.Module):
@@ -20,65 +10,43 @@ class ResNetBackbone(nn.Module):
         "resnet34": (128, 256, 512),
         "resnet50": (512, 1024, 2048),
     }
-
     def __init__(
-        self,
-        name="resnet34",
-        pretrained=True,
-        freeze_stages=1,
+        self, name: str = "resnet34", pretrained: bool = True, freeze_stages: int = 1
     ):
         super().__init__()
-
         if name not in self.OUT_CHANNELS:
             supported = ", ".join(self.OUT_CHANNELS)
-            raise ValueError(
-                f"Backbone không được hỗ trợ: {name}. "
-                f"Các lựa chọn: {supported}"
-            )
-
-        constructor = getattr(models, name)
-        network = constructor(
-            weights="DEFAULT" if pretrained else None
-        )
-
-        self.stem = nn.Sequential(
-            network.conv1,
-            network.bn1,
-            network.relu,
-            network.maxpool,
-        )
-
-        self.layer1 = network.layer1
-        self.layer2 = network.layer2
-        self.layer3 = network.layer3
-        self.layer4 = network.layer4
+            raise ValueError(f"Backbone '{name}' không được hỗ trợ. Chọn {supported}.")
 
         self.out_channels = self.OUT_CHANNELS[name]
+        weights = get_model_weights(name).DEFAULT if pretrained else None
+        resnet = get_model(name, weights=weights)
+        self.early_features = nn.Sequential(
+            resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool, resnet.layer1
+        )
+        self.stage3 = resnet.layer2
+        self.stage4 = resnet.layer3
+        self.stage5 = resnet.layer4
 
-        # Giữ đúng ý nghĩa freeze_stages của mẫu:
-        # từ 1 trở lên đóng băng stem và layer1.
         if freeze_stages >= 1:
-            for stage in (self.stem, self.layer1):
-                for parameter in stage.parameters():
-                    parameter.requires_grad_(False)
+            self.early_features.requires_grad_(False)
 
-        _freeze_bn(self)
+        for layer in self.modules():
+            if isinstance(layer, nn.BatchNorm2d):
+                layer.requires_grad_(False)
+        self.train()
 
-    def train(self, mode=True):
-        # Chuyển các lớp sang mode yêu cầu trước.
+    def train(self, mode: bool = True):
         super().train(mode)
-
-        # Sau đó đưa riêng BatchNorm về eval.
-        _freeze_bn(self)
-
+        # train() của mô hình cha sẽ bật lại chế độ train cho mọi tầng con.
+        for layer in self.modules():
+            if isinstance(layer, nn.BatchNorm2d):
+                layer.eval()
         return self
 
-    def forward(self, images):
-        features = self.stem(images)
-        features = self.layer1(features)
-
-        c3 = self.layer2(features)
-        c4 = self.layer3(c3)
-        c5 = self.layer4(c4)
-
+    def forward(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        features = self.early_features(images)
+        c3 = self.stage3(features)
+        c4 = self.stage4(c3)
+        c5 = self.stage5(c4)
         return c3, c4, c5

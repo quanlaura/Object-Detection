@@ -1,66 +1,31 @@
-"""Khử hộp trùng bằng Greedy NMS tự triển khai."""
+"""Loại hộp trùng bằng IoU và điểm tin cậy."""
 
 import torch
 
-from .box_utils import box_iou
+from .box_utils import _geometry_tensor, box_iou
 
 
-def nms(
-    boxes: torch.Tensor,
-    scores: torch.Tensor,
-    iou_threshold: float,
-) -> torch.Tensor:
-    """Trả chỉ số hộp được giữ, theo điểm giảm dần."""
-    if boxes.numel() == 0:
-        return torch.empty(
-            (0,),
-            dtype=torch.long,
-            device=boxes.device,
-        )
-
-    remaining = torch.argsort(scores, descending=True)
+def nms(boxes, scores, iou_threshold):
+    order = scores.argsort(descending=True)
     selected = []
-
-    while remaining.numel() > 0:
-        best_index = remaining[0]
-        selected.append(best_index)
-
-        if remaining.numel() == 1:
+    while order.numel():
+        selected.append(order[:1])
+        remaining = order[1:]
+        if remaining.numel() == 0:
             break
-
-        candidates = remaining[1:]
-
-        overlaps = box_iou(
-            boxes[best_index].unsqueeze(0),
-            boxes[candidates],
-        )[0]
-
-        # Chỉ loại khi IoU lớn hơn ngưỡng.
-        remaining = candidates[overlaps <= iou_threshold]
-
-    return torch.stack(selected)
+        overlap = box_iou(boxes[order[:1]], boxes[remaining])[0]
+        order = remaining[overlap <= iou_threshold]
+    return torch.cat(selected) if selected else order
 
 
-def batched_nms(
-    boxes: torch.Tensor,
-    scores: torch.Tensor,
-    labels: torch.Tensor,
-    iou_threshold: float,
-) -> torch.Tensor:
-    """NMS theo lớp bằng cách dịch tọa độ các lớp khác nhau."""
-    if boxes.numel() == 0:
-        return torch.empty(
-            (0,),
-            dtype=torch.long,
-            device=boxes.device,
-        )
+def batched_nms(boxes, scores, labels, iou_threshold):
+    """Dịch hộp theo lớp để dùng chung một lượt greedy NMS."""
+    if boxes.shape[0] == 0:
+        return boxes.new_empty((0,), dtype=torch.long)
 
-    class_spacing = boxes.max() + 1
-    shifts = labels.to(boxes) * class_spacing
-    separated_boxes = boxes + shifts[:, None]
-
-    return nms(
-        separated_boxes,
-        scores,
-        iou_threshold,
-    )
+    coordinates = _geometry_tensor(boxes)
+    # Tách các lớp ngay cả khi đầu vào có tọa độ âm.
+    lower_bound = coordinates.min().clamp_max(0)
+    class_spacing = coordinates.max() - lower_bound + 1
+    translated_boxes = coordinates + labels.to(coordinates)[:, None] * class_spacing
+    return nms(translated_boxes, scores, iou_threshold)

@@ -1,4 +1,6 @@
+# Dependencies cho grading (train + predict).
 torch>=2.1
 torchvision>=0.16
 Pillow>=9.0
 numpy>=1.23
+

@@ -1,3 +1,4 @@
+"""Gán anchor với hộp thật và tính loss cho hai nhánh RetinaNet."""
 
 import math
 
@@ -5,88 +6,64 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from utils.box_utils import box_iou, encode_boxes, decode_boxes
+from utils.box_utils import box_area, box_iou, decode_boxes, encode_boxes
 
 
-def sigmoid_focal_loss(logits, targets, alpha=0.25, gamma=2.5,
-                       smoothing=0.01, class_weights=None):
-    if smoothing > 0:
-        targets = targets * (1 - smoothing) + smoothing * 0.5
-    probabilities = logits.sigmoid()
-    cross_entropy = F.binary_cross_entropy_with_logits(
-        logits, targets, reduction="none"
-    )
-    correct_probability = (
-        probabilities * targets + (1 - probabilities) * (1 - targets)
-    )
-    balancing = alpha * targets + (1 - alpha) * (1 - targets)
-    loss = balancing * (1 - correct_probability).pow(gamma) * cross_entropy
+def sigmoid_focal_loss(logits, targets, alpha=0.25, gamma=2.5, smoothing=0.01,
+                       class_weights=None):
+    logits = logits.float()
+    targets = targets.float() * (1 - smoothing) + smoothing / 2
+    probability = logits.sigmoid()
+    correct_probability = targets * probability + (1 - targets) * (1 - probability)
+    balance = targets * alpha + (1 - targets) * (1 - alpha)
+    bce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+    loss = balance * (1 - correct_probability).pow(gamma) * bce
     if class_weights is not None:
-        weights = class_weights.to(logits.device)
-        sample_weights = 1 + (targets * weights).sum(dim=1)
-        loss = loss * sample_weights[:, None]
+        weights = class_weights.to(device=logits.device, dtype=logits.dtype)
+        loss = loss * (1 + targets @ weights)[:, None]
     return loss.sum()
 
 
-def _matched_geometry(pred_boxes, gt_boxes):
-    """Các đại lượng của từng cặp box, tính bằng float32."""
-    predicted = pred_boxes.float()
-    expected = gt_boxes.float()
-    predicted_size = (predicted[:, 2:] - predicted[:, :2]).clamp(min=0)
-    expected_size = (expected[:, 2:] - expected[:, :2]).clamp(min=0)
-    intersection_start = torch.maximum(predicted[:, :2], expected[:, :2])
-    intersection_end = torch.minimum(predicted[:, 2:], expected[:, 2:])
-    intersection = (
-        intersection_end - intersection_start
-    ).clamp(min=0).prod(dim=1)
-    union = predicted_size.prod(dim=1) + expected_size.prod(dim=1) - intersection
-    iou = intersection / union.clamp(min=1e-7)
-    enclosing_start = torch.minimum(predicted[:, :2], expected[:, :2])
-    enclosing_end = torch.maximum(predicted[:, 2:], expected[:, 2:])
-    return predicted, expected, iou, union, enclosing_end - enclosing_start
+def _matched_geometry(pred, target):
+    """Hình học theo từng cặp cùng hàng, kích thước O(số cặp)."""
+    overlap_start = torch.maximum(pred[:, :2], target[:, :2])
+    overlap_end = torch.minimum(pred[:, 2:], target[:, 2:])
+    intersection = (overlap_end - overlap_start).clamp_min(0).prod(dim=1)
+    union = box_area(pred) + box_area(target) - intersection
+    outer_start = torch.minimum(pred[:, :2], target[:, :2])
+    outer_end = torch.maximum(pred[:, 2:], target[:, 2:])
+    return intersection, union, outer_end - outer_start
 
 
 def giou_loss(pred_boxes, gt_boxes):
-    _, _, iou, union, enclosing_size = _matched_geometry(pred_boxes, gt_boxes)
-    enclosing_area = enclosing_size.clamp(min=0).prod(dim=1)
-    penalty = (enclosing_area - union) / enclosing_area.clamp(min=1e-7)
-    return (1 - iou + penalty).sum()
+    intersection, union, outer_size = _matched_geometry(pred_boxes.float(), gt_boxes.float())
+    iou = intersection / union.clamp_min(1e-7)
+    outer_area = outer_size.clamp_min(0).prod(dim=1)
+    return (1 - iou + (outer_area - union) / outer_area.clamp_min(1e-7)).sum()
 
 
 def ciou_loss(pred_boxes, gt_boxes):
-    predicted, expected, iou, _, enclosing_size = _matched_geometry(
-        pred_boxes, gt_boxes
-    )
-    diagonal_squared = enclosing_size.square().sum(dim=1).clamp(min=1e-7)
-    predicted_center = (predicted[:, :2] + predicted[:, 2:]) * 0.5
-    expected_center = (expected[:, :2] + expected[:, 2:]) * 0.5
-    distance_squared = (
-        predicted_center - expected_center
-    ).square().sum(dim=1)
-
-    predicted_size = (predicted[:, 2:] - predicted[:, :2]).clamp(min=1e-6)
-    expected_size = (expected[:, 2:] - expected[:, :2]).clamp(min=1e-6)
-    angle_difference = (
-        torch.atan(expected_size[:, 0] / expected_size[:, 1])
-        - torch.atan(predicted_size[:, 0] / predicted_size[:, 1])
-    )
-    aspect_penalty = (4 / math.pi ** 2) * angle_difference.square()
-    with torch.no_grad():
-        aspect_weight = aspect_penalty / (
-            1 - iou + aspect_penalty
-        ).clamp(min=1e-7)
-    return (
-        1 - iou
-        + distance_squared / diagonal_squared
-        + aspect_weight * aspect_penalty
-    ).sum()
+    pred, target = pred_boxes.float(), gt_boxes.float()
+    intersection, union, outer_size = _matched_geometry(pred, target)
+    iou = intersection / union.clamp_min(1e-7)
+    pred_center = (pred[:, :2] + pred[:, 2:]) / 2
+    target_center = (target[:, :2] + target[:, 2:]) / 2
+    distance = (pred_center - target_center).square().sum(dim=1)
+    diagonal = outer_size.square().sum(dim=1).clamp_min(1e-7)
+    pw, ph = (pred[:, 2:] - pred[:, :2]).clamp_min(1e-6).unbind(dim=1)
+    tw, th = (target[:, 2:] - target[:, :2]).clamp_min(1e-6).unbind(dim=1)
+    aspect = (4 / math.pi ** 2) * ((pw / ph).atan() - (tw / th).atan()).square()
+    weight = aspect.detach() / (1 - iou.detach() + aspect.detach()).clamp_min(1e-7)
+    return (1 - iou + distance / diagonal + weight * aspect).sum()
 
 
 class DetectionLoss(nn.Module):
-    def __init__(self, num_classes, fg_iou_thresh=0.5, bg_iou_thresh=0.40,
-                 alpha=0.25, gamma=2.5, reg_weight=2.0,
-                 reg_loss_type="giou", smoothing=0.01, class_weights=None):
+    def __init__(self, num_classes, fg_iou_thresh=0.5, bg_iou_thresh=0.4,
+                 alpha=0.25, gamma=2.5, reg_weight=2.0, reg_loss_type="giou",
+                 smoothing=0.01, class_weights=None):
         super().__init__()
+        if reg_loss_type not in ("giou", "ciou", "smooth_l1"):
+            raise ValueError(f"Loss định vị không hỗ trợ: {reg_loss_type}")
         self.num_classes = num_classes
         self.fg_iou_thresh = fg_iou_thresh
         self.bg_iou_thresh = bg_iou_thresh
@@ -95,89 +72,73 @@ class DetectionLoss(nn.Module):
         self.reg_weight = reg_weight
         self.reg_loss_type = reg_loss_type
         self.smoothing = smoothing
-        if class_weights is None:
-            self.class_weights = None
-        else:
-            self.register_buffer(
-                "class_weights", torch.as_tensor(class_weights, dtype=torch.float32)
-            )
+        weights = None if class_weights is None else torch.as_tensor(class_weights, dtype=torch.float32)
+        if weights is not None and weights.shape != (num_classes,):
+            raise ValueError("class_weights cần một giá trị cho mỗi lớp.")
+        self.register_buffer("class_weights", weights)
 
+    @torch.no_grad()
     def _match(self, anchors, gt_boxes):
-        states = torch.zeros(
-            len(anchors), dtype=torch.long, device=anchors.device
-        )
-        if gt_boxes.numel() == 0:
-            return states, torch.zeros_like(states)
+        """Trả trạng thái anchor (1, 0, -1) và chỉ số hộp thật đã ghép."""
+        if gt_boxes.numel() == 0 or anchors.numel() == 0:
+            background = anchors.new_zeros(len(anchors), dtype=torch.long)
+            return background, background.clone()
 
         overlaps = box_iou(anchors, gt_boxes)
-        best_overlap, assignments = overlaps.max(dim=1)
-        states.fill_(-1)
-        states[best_overlap < self.bg_iou_thresh] = 0
-        states[best_overlap >= self.fg_iou_thresh] = 1
+        best_iou, matched = overlaps.max(dim=1)
+        status = torch.full_like(matched, -1)
+        status[best_iou < self.bg_iou_thresh] = 0
+        status[best_iou >= self.fg_iou_thresh] = 1
 
-        # Giữ forced matching của mẫu, kể cả khi nhiều GT chọn cùng anchor.
-        preferred_anchors = overlaps.argmax(dim=0)
-        states[preferred_anchors] = 1
-        assignments[preferred_anchors] = torch.arange(
-            len(gt_boxes), device=anchors.device
-        )
-        return states, assignments
+        # Mỗi hộp thật đề cử anchor tốt nhất. Khi trùng anchor,
+        # ưu tiên hộp thật ở vị trí sau như thứ tự gán của mẫu trên CPU.
+        forced = overlaps.argmax(dim=0)
+        gt_ids = torch.arange(len(gt_boxes), device=anchors.device)
+        forced_matches = torch.full_like(matched, -1)
+        forced_matches.scatter_reduce_(0, forced, gt_ids, reduce="amax")
+        forced_positive = forced_matches >= 0
+        status[forced_positive] = 1
+        matched[forced_positive] = forced_matches[forced_positive]
+        return status, matched
+
+    def _regression_loss(self, anchors, deltas, gt_boxes):
+        if self.reg_loss_type == "smooth_l1":
+            target_deltas = encode_boxes(anchors, gt_boxes).clamp(-10, 10)
+            return F.smooth_l1_loss(
+                deltas.float(), target_deltas, beta=1 / 9, reduction="sum"
+            )
+        predicted = decode_boxes(anchors, deltas)
+        if self.reg_loss_type == "ciou":
+            return ciou_loss(predicted, gt_boxes)
+        return giou_loss(predicted, gt_boxes)
 
     def forward(self, cls_logits, reg_preds, anchors, targets):
-        classification_sum = torch.zeros((), device=cls_logits.device)
-        regression_sum = torch.zeros((), device=cls_logits.device)
+        """Trả focal loss và loss định vị đã nhân reg_weight."""
+        cls_total = cls_logits.new_zeros((), dtype=torch.float32)
+        reg_total = reg_preds.new_zeros((), dtype=torch.float32)
         positive_count = 0
+        device = cls_logits.device
 
-        for index, target in enumerate(targets):
-            gt_boxes = target["boxes"].to(cls_logits.device)
-            gt_labels = target["labels"].to(cls_logits.device)
-            states, assignments = self._match(anchors, gt_boxes)
-            active = states >= 0
-            positive = states == 1
-            count = int(positive.sum().item())
-            positive_count += count
+        for logits, deltas, target in zip(cls_logits, reg_preds, targets, strict=True):
+            gt_boxes = target["boxes"].to(device)
+            gt_labels = target["labels"].to(device)
+            status, matched = self._match(anchors, gt_boxes)
+            positives = torch.where(status == 1)[0]
+            valid = status != -1
+            positive_count += len(positives)
+            class_targets = torch.zeros_like(logits, dtype=torch.float32)
 
-            desired_classes = torch.zeros_like(cls_logits[index])
-            if count:
-                desired_classes[
-                    positive, gt_labels[assignments[positive]]
-                ] = 1
+            if positives.numel():
+                gt_ids = matched[positives]
+                class_targets[positives, gt_labels[gt_ids]] = 1
+                box_loss = self._regression_loss(anchors[positives], deltas[positives], gt_boxes[gt_ids])
+                if torch.isfinite(box_loss):
+                    reg_total = reg_total + box_loss
 
-            classification_sum = classification_sum + sigmoid_focal_loss(
-                cls_logits[index][active],
-                desired_classes[active],
-                alpha=self.alpha,
-                gamma=self.gamma,
-                smoothing=self.smoothing,
-                class_weights=self.class_weights,
+            cls_total = cls_total + sigmoid_focal_loss(
+                logits[valid], class_targets[valid], self.alpha, self.gamma,
+                self.smoothing, self.class_weights,
             )
 
-            if not count:
-                continue
-
-            expected_boxes = gt_boxes[assignments[positive]]
-            deltas = reg_preds[index][positive]
-
-            if self.reg_loss_type in ("giou", "ciou"):
-                decoded = decode_boxes(anchors[positive], deltas)
-                regression_function = (
-                    ciou_loss if self.reg_loss_type == "ciou" else giou_loss
-                )
-                regression_term = regression_function(decoded, expected_boxes)
-            else:
-                desired_deltas = encode_boxes(
-                    anchors[positive], expected_boxes
-                ).clamp(-10, 10)
-                regression_term = F.smooth_l1_loss(
-                    deltas, desired_deltas, beta=1 / 9, reduction="sum"
-                )
-
-            # Giữ cách bỏ qua regression loss không hữu hạn của mẫu.
-            if torch.isfinite(regression_term).item():
-                regression_sum = regression_sum + regression_term
-
-        denominator = max(positive_count, 1)
-        return (
-            classification_sum / denominator,
-            self.reg_weight * regression_sum / denominator,
-        )
+        normalizer = max(positive_count, 1)
+        return cls_total / normalizer, self.reg_weight * reg_total / normalizer
