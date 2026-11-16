@@ -95,22 +95,28 @@ def format_prediction(name, detection, classes):
     return {"image_id": name, "boxes": boxes}
 
 
-def main():
-    args = parse_args()
-    device = torch.device(args.device)
-    checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
+def load_detector(checkpoint_path, device, img_size=None):
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     config = checkpoint["config"]
     classes = config["classes"]
     if len(classes) != config["num_classes"]:
         raise ValueError("Số lớp trong checkpoint không khớp.")
-    img_size = args.img_size if args.img_size is not None else config["img_size"]
-    dataset = InferenceDataset(args.image_dir, img_size, args.annotations)
+    img_size = img_size if img_size is not None else config["img_size"]
     model = RetinaDetector(
         num_classes=len(classes), backbone=config["backbone"],
         fpn_channels=config["fpn_channels"], img_size=img_size, pretrained=False,
     )
     model.load_state_dict(checkpoint["model"], strict=True)
     model.to(device).eval()
+    return model, config, img_size
+
+
+def main():
+    args = parse_args()
+    device = torch.device(args.device)
+    model, config, img_size = load_detector(args.checkpoint, device, args.img_size)
+    classes = config["classes"]
+    dataset = InferenceDataset(args.image_dir, img_size, args.annotations)
     loader = DataLoader(
         dataset, batch_size=args.batch_size, num_workers=args.num_workers,
         collate_fn=collate_inference, pin_memory=device.type == "cuda",

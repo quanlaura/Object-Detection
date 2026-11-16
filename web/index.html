@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Demo nhận diện vật thể với RetinaNet và ResNet34.">
+  <title>RetinaNet · Nhận diện vật thể</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/demo.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="#top"><span class="brand-mark" aria-hidden="true"></span><strong>RetinaNet</strong></a>
+      <nav aria-label="Điều hướng">
+        <a href="#demo">Thử mô hình</a>
+        <a href="#evaluation">Đánh giá</a>
+        <a href="#pipeline">Kiến trúc</a>
+      </nav>
+      <span class="device" id="device"><i></i>Đang kết nối</span>
+    </div>
+  </header>
+
+  <main class="shell" id="top">
+    <section class="intro" aria-labelledby="page-title">
+      <div>
+        <p class="eyebrow"><span></span> Object Detection</p>
+        <h1 id="page-title">Nhận diện vật thể<br>trong ảnh</h1>
+        <p class="intro-copy">Dán ảnh, tải ảnh hoặc chọn ảnh test để xem mô hình tìm vật thể, gán nhãn và vẽ hộp bao.</p>
+      </div>
+      <a class="score-callout" href="#evaluation">
+        <span class="score-label">mAP@0.5 trên tập test</span>
+        <strong id="hero-map">—</strong>
+        <span class="score-detail"><span id="hero-test-count">— ảnh test</span><span aria-hidden="true">↗</span></span>
+      </a>
+    </section>
+
+    <section id="demo" aria-labelledby="demo-title">
+      <div class="section-heading">
+        <h2 id="demo-title">Thử mô hình</h2>
+        <div id="class-legend" class="legend" aria-label="Các lớp của mô hình"></div>
+      </div>
+      <div class="workspace">
+        <div class="views">
+          <article class="view">
+            <div class="view-header">
+              <h3>Ảnh đầu vào</h3>
+              <div class="image-actions">
+                <button type="button" class="text-button" id="paste-image" title="Dán ảnh từ clipboard (Ctrl+V)">Dán ảnh</button>
+                <label class="upload-button" for="upload"><span aria-hidden="true">↑</span> Tải ảnh</label>
+                <input id="upload" class="sr-only" type="file" accept=".jpg,.jpeg,.png,.webp,.bmp,image/jpeg,image/png,image/webp,image/bmp">
+              </div>
+            </div>
+            <div id="drop-area" class="stage input-stage">
+              <div id="input-photo" class="photo" hidden>
+                <img id="input-image" alt="Ảnh đầu vào">
+                <div id="truth-boxes" class="overlays" aria-hidden="true"></div>
+              </div>
+              <span id="input-placeholder" class="placeholder">Dán, tải hoặc kéo thả ảnh vào đây</span>
+            </div>
+            <div class="view-footer">
+              <span id="image-name">JPG, PNG, WebP hoặc BMP</span>
+              <label class="truth" id="truth-label" hidden><input type="checkbox" id="truth"> Hiện nhãn thật</label>
+            </div>
+          </article>
+          <article class="view">
+            <div class="view-header">
+              <h3>Kết quả nhận diện</h3>
+              <button type="button" class="text-button" id="export" disabled>Tải JSON <span aria-hidden="true">↓</span></button>
+            </div>
+            <div class="stage result-stage" id="result-stage" aria-busy="false">
+              <div id="result-photo" class="photo" hidden>
+                <img id="result-image" alt="Ảnh với các hộp dự đoán">
+                <div id="predicted-boxes" class="overlays" aria-hidden="true"></div>
+              </div>
+              <span id="result-placeholder" class="placeholder">Kết quả sẽ hiện ở đây</span>
+            </div>
+            <div class="view-footer">
+              <span id="detection-count">Chưa chạy nhận diện</span>
+              <span id="runtime"></span>
+            </div>
+          </article>
+        </div>
+
+        <div class="controls">
+          <label class="slider"><span>Độ tin cậy <output id="confidence-value" for="confidence">0,25</output></span>
+            <input type="range" id="confidence" min="0.05" max="0.95" value="0.25" step="0.05">
+          </label>
+          <label class="slider"><span>Ngưỡng NMS <output id="nms-value" for="nms">0,40</output></span>
+            <input type="range" id="nms" min="0.10" max="0.90" value="0.40" step="0.05">
+          </label>
+          <label class="tta"><input type="checkbox" id="tta"> TTA <span class="sr-only">(ảnh lật ngang)</span></label>
+          <button type="button" id="detect" class="primary" disabled>Chạy nhận diện <span aria-hidden="true">→</span></button>
+        </div>
+        <p class="status" id="status" role="status" hidden></p>
+        <div class="sample-strip" id="sample-strip" hidden>
+          <h3>Ảnh từ tập test</h3>
+          <div class="samples" id="samples"></div>
+        </div>
+        <details id="prediction-details" class="prediction-details" hidden>
+          <summary>Chi tiết từng dự đoán</summary>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>Lớp</th><th>Độ tin cậy</th><th>Hộp bao (px)</th></tr></thead>
+              <tbody id="prediction-rows"></tbody>
+            </table>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <section class="evaluation" id="evaluation" aria-labelledby="evaluation-title">
+      <div class="section-heading">
+        <h2 id="evaluation-title">Đánh giá mô hình</h2>
+        <p id="training-summary"></p>
+      </div>
+      <div class="evaluation-grid">
+        <article class="metric-card">
+          <h3>Validation và test</h3>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>Tập</th><th>mAP@0.5</th><th>Precision</th><th>Recall</th></tr></thead>
+              <tbody id="metric-rows"></tbody>
+            </table>
+          </div>
+          <p class="note">Điểm đã lưu từ checkpoint ResNet34 của dự án, với confidence 0,25, NMS 0,40 và TTA tắt. Precision và recall tính micro.</p>
+        </article>
+        <article class="metric-card">
+          <h3>AP@0.5 từng lớp trên test</h3>
+          <div class="class-bars" id="class-bars"></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="pipeline" id="pipeline" aria-labelledby="pipeline-title">
+      <div class="section-heading"><h2 id="pipeline-title">Kiến trúc</h2></div>
+      <ol class="steps">
+        <li><strong>Chuẩn hóa ảnh</strong><span>Resize về kích thước mô hình và chuẩn hóa theo ImageNet.</span></li>
+        <li><strong>ResNet34 + FPN</strong><span>Trích xuất đặc trưng và tạo tháp P3–P7.</span></li>
+        <li><strong>Đầu dự đoán</strong><span>Ước lượng lớp và độ lệch hộp cho từng anchor.</span></li>
+        <li><strong>NMS theo lớp</strong><span>Lọc hộp trùng và đổi về tọa độ ảnh gốc.</span></li>
+      </ol>
+    </section>
+  </main>
+  <footer class="shell site-footer">ObjectDetectionFromScratch <a href="#top">Về đầu trang ↑</a></footer>
+</body>
+</html>

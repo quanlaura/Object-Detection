@@ -1,0 +1,11 @@
+.git
+.env
+.venv
+.vscode
+**/__pycache__
+**/*.py[cod]
+**/*.pth
+**/*.zip
+public
+final_public
+runs

@@ -1,0 +1,13 @@
+services:
+  demo:
+    build: .
+    init: true
+    ports:
+      - "127.0.0.1:${DEMO_PORT:-7861}:7861"
+    volumes:
+      - type: bind
+        source: ./resnet34_full/best.pth
+        target: /app/resnet34_full/best.pth
+        read_only: true
+        bind:
+          create_host_path: false
